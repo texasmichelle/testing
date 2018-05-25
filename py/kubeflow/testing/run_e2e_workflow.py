@@ -29,6 +29,7 @@ as a command line argument.
 """
 
 import argparse
+import datetime
 import logging
 from kubernetes import client as k8s_client
 import os
@@ -41,15 +42,19 @@ import sys
 import yaml
 
 # The namespace to launch the Argo workflow in.
-NAMESPACE = "kubeflow-test-infra"
+def get_namespace(args):
+  if args.release:
+    return "kubeflow-releasing"
+  return "kubeflow-test-infra"
 
 class WorkflowComponent(object):
   """Datastructure to represent a ksonnet component to submit a workflow."""
 
-  def __init__(self, name, app_dir, component):
+  def __init__(self, name, app_dir, component, params):
     self.name = name
     self.app_dir = app_dir
     self.component = component
+    self.params = params
 
 def _get_src_dir():
   return os.path.abspath(os.path.join(__file__, "..",))
@@ -68,16 +73,39 @@ def parse_config_file(config_file, root_dir):
   components = []
   for i in results["workflows"]:
     components.append(WorkflowComponent(
-      i["name"], os.path.join(root_dir, i["app_dir"]), i["component"]))
+      i["name"], os.path.join(root_dir, i["app_dir"]), i["component"], i.get("params", {})))
   return components
 
-def run(args, file_handler): # pylint: disable=too-many-statements
+def generate_env_from_head(args):
+  commit = util.run(["git", "rev-parse", "HEAD"], cwd=os.path.join(
+    args.repos_dir, os.getenv("REPO_OWNER"), os.getenv("REPO_NAME")))
+  pull_base_sha = commit[0:8]
+  date_str = datetime.datetime.now().strftime("%Y%m%d")
+  build_number = uuid.uuid4().hex[0:4]
+  version_tag = "v{0}-{1}".format(date_str, pull_base_sha)
+  env_var = {
+    "PULL_BASE_SHA": pull_base_sha,
+    "BUILD_NUMBER": build_number,
+    "VERSION_TAG": version_tag,
+  }
+
+  for k in env_var:
+    if os.getenv(k):
+      continue
+    os.environ[k] = env_var.get(k)
+
+def run(args, file_handler): # pylint: disable=too-many-statements,too-many-branches
+  # Print ksonnet version
+  util.run(["ks", "version"])
+  if args.release:
+    generate_env_from_head(args)
   workflows = []
   if args.config_file:
     workflows.extend(parse_config_file(args.config_file, args.repos_dir))
 
   if args.app_dir and args.component:
-    workflows.append(WorkflowComponent("legacy", args.app_dir, args.component))
+    # TODO(jlewi): We can get rid of this branch once all repos are using a prow_config.xml file.
+    workflows.append(WorkflowComponent("legacy", args.app_dir, args.component, {}))
   create_started_file(args.bucket)
 
   util.maybe_activate_service_account()
@@ -87,7 +115,8 @@ def run(args, file_handler): # pylint: disable=too-many-statements
 
   api_client = k8s_client.ApiClient()
   workflow_names = []
-  ui_urls = []
+  ui_urls = {}
+
   for w in workflows:
     # Create the name for the workflow
     # We truncate sha numbers to prevent the workflow name from being too large.
@@ -134,36 +163,54 @@ def run(args, file_handler): # pylint: disable=too-many-statements
 
     util.run(["ks", "param", "set", "--env=" + env, w.component, "prow_env", ",".join(prow_env)],
              cwd=w.app_dir)
-    util.run(["ks", "param", "set", "--env=" + env, w.component, "namespace", NAMESPACE],
+    util.run(["ks", "param", "set", "--env=" + env, w.component, "namespace", get_namespace(args)],
              cwd=w.app_dir)
     util.run(["ks", "param", "set", "--env=" + env, w.component, "bucket", args.bucket],
              cwd=w.app_dir)
+    if args.release:
+      util.run(["ks", "param", "set", "--env=" + env, w.component, "versionTag",
+                os.getenv("VERSION_TAG")], cwd=w.app_dir)
+
+    # Set any extra params. We do this in alphabetical order to make it easier to verify in
+    # the unittest.
+    param_names = w.params.keys()
+    param_names.sort()
+    for k in param_names:
+      util.run(["ks", "param", "set", "--env=" + env, w.component, k, "{0}".format(w.params[k])],
+               cwd=w.app_dir)
 
     # For debugging print out the manifest
     util.run(["ks", "show", env, "-c", w.component], cwd=w.app_dir)
     util.run(["ks", "apply", env, "-c", w.component], cwd=w.app_dir)
 
-    ui_url = ("http://testing-argo.kubeflow.io/timeline/kubeflow-test-infra/{0}"
-              ";tab=workflow".format(workflow_name))
-    ui_urls.append(ui_url)
+    ui_url = ("http://testing-argo.kubeflow.org/workflows/kubeflow-test-infra/{0}"
+              "?tab=workflow".format(workflow_name))
+    ui_urls[workflow_name] = ui_url
     logging.info("URL for workflow: %s", ui_url)
 
   success = True
+  workflow_phase = {}
   try:
-    results = argo_client.wait_for_workflows(api_client, NAMESPACE,
+    results = argo_client.wait_for_workflows(api_client, get_namespace(args),
                                              workflow_names,
                                              status_callback=argo_client.log_status)
     for r in results:
       phase = r.get("status", {}).get("phase")
+      name = r.get("metadata", {}).get("name")
+      workflow_phase[name] = phase
       if phase != "Succeeded":
         success = False
-      logging.info("Workflow %s/%s finished phase: %s", NAMESPACE,
-                   r.get("metadata", {}).get("name"), phase)
+      logging.info("Workflow %s/%s finished phase: %s", get_namespace(args), name, phase)
   except util.TimeoutError:
     success = False
     logging.error("Time out waiting for Workflows %s to finish", ",".join(workflow_names))
+  except Exception as e:
+    # We explicitly log any exceptions so that they will be captured in the
+    # build-log.txt that is uploaded to Gubernator.
+    logging.error("Exception occurred: %s", e)
+    raise
   finally:
-    prow_artifacts.finalize_prow_job(args.bucket, success, ",".join(ui_urls))
+    success = prow_artifacts.finalize_prow_job(args.bucket, success, workflow_phase, ui_urls)
 
     # Upload logs to GCS. No logs after this point will appear in the
     # file in gcs
@@ -230,6 +277,12 @@ def main(unparsed_args=None):  # pylint: disable=too-many-locals
     type=str,
     default="",
     help="The ksonnet component to use.")
+
+  parser.add_argument(
+    "--release",
+    action='store_true',
+    default=False,
+    help="Whether workflow is for image release")
 
   #############################################################################
   # Process the command line arguments.

@@ -16,7 +16,9 @@
 #   https://github.com/mattrobenolt/jinja2-cli
 #   pip install jinja2-clie
 IMG = gcr.io/kubeflow-ci/test-worker
-TAG := $(shell date +v%Y%m%d)-$(shell git describe --tags --always --dirty)-$(shell git diff | sha256sum | cut -c -6)
+RELEASE_WORKER = gcr.io/kubeflow-releasing/worker
+
+TAG := $(shell date +v%Y%m%d)-$(shell git describe --tags --always --dirty)-$(shell git diff | shasum -a256 | cut -c -6)
 DIR := ${CURDIR}
 
 all: build
@@ -24,11 +26,21 @@ all: build
 # To build without the cache set the environment variable
 # export DOCKER_BUILD_OPTS=--no-cache
 build:
-	docker build ${DOCKER_BUILD_OPTS} -t $(IMG):$(TAG) .
-	docker tag $(IMG):$(TAG) $(IMG):latest
-	@echo Built $(IMG):$(TAG) and tagged with latest
+	docker build ${DOCKER_BUILD_OPTS} -t $(IMG):$(TAG) .	
+	@echo Built $(IMG):$(TAG)
 
+# Build but don't attach the latest tag. This allows manual testing/inspection of the image
+# first.
 push: build
-	gcloud docker -- push $(IMG):$(TAG)
-	gcloud docker -- push $(IMG):latest
-	@echo Pushed $(IMG) with :latest and :$(TAG) tags
+	gcloud docker -- push $(IMG):$(TAG)	
+	@echo Pushed $(IMG) with  :$(TAG) tags
+	# Tagging into a new project can be very slow but it appears to work.
+	gcloud container images add-tag --quiet $(IMG):$(TAG) $(RELEASE_WORKER):$(TAG) --verbosity=info
+	echo created $(RELEASE_WORKER):$(TAG)
+	
+push-latest: push
+	gcloud container images add-tag --quiet $(IMG):$(TAG) $(IMG):latest --verbosity=info
+	echo created $(IMG):latest
+	# Tagging into a new project can be very slow but it appears to work.	
+	gcloud container images add-tag --quiet $(RELEASE_WORKER):$(TAG) $(RELEASE_WORKER):latest --verbosity=info
+	echo created $(RELEASE_WORKER):latest

@@ -26,7 +26,7 @@ Here's how it works
 
 Quick Links
 
-  * [Argo UI](http://testing-argo.kubeflow.io/)
+  * [Argo UI](http://testing-argo.kubeflow.org/)
   * [Test Grid](https://k8s-testgrid.appspot.com/sig-big-data)
   * [Prow jobs for kubeflow/kubeflow](https://prow.k8s.io/?repo=kubeflow%2Fkubeflow)
 
@@ -40,12 +40,12 @@ Quick Links
 * The Argo workflow is defined in the repository being tested
    * We always use the worfklow at the commit being tested
 * [checkout.sh](https://github.com/kubeflow/testing/blob/master/images/checkout.sh) is used to checkout the code being tested
-   * This also checks out [kubeflow/testing]((https://github.com/kubeflow/testing/) so that all repositories can
+   * This also checks out [kubeflow/testing](https://github.com/kubeflow/testing/) so that all repositories can
      rely on it for shared tools.
 
 ## Accessing The Argo UI
 
-The UI is publicly available at http://testing-argo.kubeflow.io/
+The UI is publicly available at http://testing-argo.kubeflow.org/
 
 ## Working with the test infrastructure
 
@@ -83,23 +83,20 @@ case you can use one of the alternative methods listed below.
 
 ### Argo UI
 
-The argo UI is publicly accessible at http://testing-argo.kubeflow.io/timeline.
+The argo UI is publicly accessible at http://testing-argo.kubeflow.org/timeline.
 
 1. Find and click on the workflow corresponding to your pre/post/periodic job
 1. Select the workflow tab
 1. From here you can select a specific step and then see the logs for that step
 
-Unfortunately there are some limitations in the Argo UI e.g.
- 
-  * [argo/issues#710](https://github.com/argoproj/argo/issues/710) exit handlers aren't shown
-
-So if your exit handler fails you may need to look at pod logs or Stackdriver logs directly.
-
 ### Stackdriver logs
 
-Since we run our E2E tests on GKE, all logs are persisted in Stackdriver logging.
+Since we run our E2E tests on GKE, all logs are persisted in [Stackdriver logging](https://console.cloud.google.com/logs/viewer?project=kubeflow-ci&resource=k8s_cluster%2Flocation%2Fus-east1-d%2Fcluster_name%2Fkubeflow-testing).
 
-Access to Stackdriver logs is restricted. We are working on giving sufficient access to members of the community ([kubeflow/testing#5](https://github.com/kubeflow/testing/issues/5)).
+Viewer access to Stackdriver logs is available by joining one of the following groups
+
+  * ci-viewer@kubeflow.org
+  * ci-team@kubeflow.org
 
 If you know the pod id corresponding to the step of interest then you can use the following Stackdriver filter
 
@@ -116,27 +113,66 @@ The ${POD_ID} is of the form
 ${WORKFLOW_ID}-${RANDOM_ID}
 ```
 
+## Debugging Failed Tests
+
+### No results show up in Gubernator
+
+If no results show up in Gubernator this means the prow job didn't get far enough to upload any results/logs to GCS.
+
+To debug this you need the pod logs. You can access the pod logs via the build log link for your job in the [prow jobs UI](https://prow.k8s.io/)
+
+  * Pod logs are ephmeral so you need to check shortly after your job runs.
+
+The pod logs are available in StackDriver but only the Google Kubeflow Team has access
+  * Prow runs on a cluster owned by the K8s team not Kubeflow
+  * This policy is determined by K8s not Kubeflow
+  * This could potentially be fixed by using our own prow build cluster [issue#32](https://github.com/kubeflow/testing/issues/32)
+
+To access the stackdriver logs 
+  
+  * Open stackdriver for project [k8s-prow-builds](https://console.cloud.google.com/logs/viewer?organizationId=433637338589&project=k8s-prow-builds&folder&minLogLevel=0&expandAll=false&timestamp=2018-05-22T17:09:26.625000000Z&customFacets&limitCustomFacetWidth=true&dateRangeStart=2018-05-22T11:09:27.032Z&dateRangeEnd=2018-05-22T17:09:27.032Z&interval=PT6H&resource=gce_firewall_rule&scrollTimestamp=2018-05-22T15:40:23.000000000Z&advancedFilter=resource.type%3D"container"%0Aresource.labels.pod_id%3D"15f5a424-5dd6-11e8-826c-0a580a6c0117"%0A)
+  * Get the pod ID by clicking on the build log in the [prow jobs UI](https://prow.k8s.io/)
+  * Filter the logs using 
+
+  ```
+  resource.type="container"
+  resource.labels.pod_id=${POD_ID}
+  ```
+
+### Debugging Failed Deployments
+
+If an E2E test fails because a pod doesn't start (e.g JupyterHub) we can debug this by looking at the events associated with the pod.
+If you have access to the pod you can do `kubectl describe pods`.
+
+Events are also persisted to StackDriver and can be fetched with a query like the following.
+
+```
+resource.labels.cluster_name="kubeflow-testing"
+logName="projects/kubeflow-ci/logs/events" 
+jsonPayload.involvedObject.namespace = "kubeflow-presubmit-tf-serving-image-299-439a983-360-fa0d"
+```
+
+  * Change the namespace to be the actual namespace used for the test
+
 ## Adding an E2E test for a new repository
 
 We use prow to launch Argo workflows. Here are the steps to create a new E2E test for a repository. This assumes prow is already
 configured for the repository (see these [instructions](#prow-setup) for info on setting up prow).
 
 1. Create a ksonnet App in that repository and define an Argo workflow
-  * The first step in the workflow should checkout the code using [checkout.sh](https://github.com/kubeflow/testing/tree/master/images/checkout.sh)
-  * Code should be checked out to a shared NFS volume to make it accessible to subsequent steps
+   * The first step in the workflow should checkout the code using [checkout.sh](https://github.com/kubeflow/testing/tree/master/images/checkout.sh)
+   * Code should be checked out to a shared NFS volume to make it accessible to subsequent steps
 1. Create a container to use with the Prow job
-  * For an example look at the [tensorflow/k8s](https://github.com/tensorflow/k8s/tree/master/test/test-infra) repository
-  * Image should be based on `gcr.io/mlkube-testing/test-worker`
-  * Create an entrypoint that does two things
-
-    1. Run [checkout.sh](https://github.com/kubeflow/testing/images/checkout.sh) to download the source
-    1. Use [kubeflow.testing.run_e2e_workflow](https://github.com/kubeflow/testing/tree/master/py/kubeflow/testing/run_e2e_workflow.py)
-       to run the Argo workflow.
-
+   * For an example look at the [kubeflow/testing](https://github.com/kubeflow/testing/blob/master/images/Dockerfile) Dockerfile
+   * Image should be based on `kubeflow-ci/test-worker`
+   * Create an entrypoint that does two things
+     1. Run [checkout.sh](https://github.com/kubeflow/testing/tree/master/images/checkout.sh) to download the source
+     1. Use [kubeflow.testing.run_e2e_workflow](https://github.com/kubeflow/testing/tree/master/py/kubeflow/testing/run_e2e_workflow.py)
+        to run the Argo workflow.
+   * Add a `prow_config.yaml` file that will be passed into run_e2e_workflow to determine which ksonnet app to use for testing. An example can be seen [here](https://github.com/kubeflow/kubeflow/blob/master/prow_config.yaml).
 1. Create a prow job for that repository
-  
-  * The command for the prow job should be set via the entrypoint baked into the Docker image
-  * This way we can change the Prow job just by pushing a docker image and we don't need to update the prow config.
+   * The command for the prow job should be set via the entrypoint baked into the Docker image
+   * This way we can change the Prow job just by pushing a docker image and we don't need to update the prow config.
 
 ## Testing Changes to the ProwJobs
 
@@ -199,9 +235,9 @@ Our jobs should be added to
 ## Setting up Kubeflow Test Infrastructure
 
 Our tests require:
-  * a K8s cluster 
+  * a K8s cluster
   * Argo installed on the cluster
-  * A shared NFS filesystem  
+  * A shared NFS filesystem
 
 Our prow jobs execute Argo worflows in project/clusters owned by Kubeflow. We don't use the shared Kubernetes test clusters for this.
   * This gives us more control of the resources we want to use e.g. GPUs
@@ -211,7 +247,7 @@ This section provides the instructions for setting this up.
 Create a GKE cluster
 
 ```
-PROJECT=mlkube-testing
+PROJECT=kubeflow-ci
 ZONE=us-east1-d
 CLUSTER=kubeflow-testing
 NAMESPACE=kubeflow-test-infra
@@ -219,37 +255,64 @@ NAMESPACE=kubeflow-test-infra
 gcloud --project=${PROJECT} container clusters create \
 	--zone=${ZONE} \
 	--machine-type=n1-standard-8 \
-	--cluster-version=1.8.4-gke.1 \
 	${CLUSTER}
 ```
-
 
 ### Create a static ip for the Argo UI
 
 ```
-gcloud compute --project=mlkube-testing addresses create argo-ui --global
+gcloud compute --project=${PROJECT} addresses create argo-ui --global
 ```
 
+### Enable GCP APIs
+
+```
+gcloud services --project=${PROJECT} enable cloudbuild.googleapis.com
+gcloud services --project=${PROJECT} enable containerregistry.googleapis.com
+gcloud services --project=${PROJECT} enable container.googleapis.com
+```
 ### Create a GCP service account
 
 * The tests need a GCP service account to upload data to GCS for Gubernator
 
 ```
 SERVICE_ACCOUNT=kubeflow-testing
-gcloud iam service-accounts --project=mlkube-testing create ${SERVICE_ACCOUNT} --display-name "Kubeflow testing account"
+gcloud iam service-accounts --project=${PROJECT} create ${SERVICE_ACCOUNT} --display-name "Kubeflow testing account"
 gcloud projects add-iam-policy-binding ${PROJECT} \
-    	--member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com --role roles/container.developer
+    	--member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com --role roles/container.admin \
+      --role=roles/viewer \
+      --role=roles/cloudbuild.builds.editor \
+      --role=roles/logging.viewer \
+      --role=roles/storage.admin \
+      --role=roles/compute.instanceAdmin.v1
 ```
   * Our tests create K8s resources (e.g. namespaces) which is why we grant it developer permissions.
+  * Project Viewer (because GCB requires this with gcloud)
+  * Kubernetes Engine Admin (some tests create GKE clusters)
+  * Logs viewer (for GCB)
+  * Compute Instance Admin to create VMs for minikube
+  * Storage Admin (For GCR)
+
+
+```
+GCE_DEFAULT=${PROJECT_NUMBER}-compute@developer.gserviceaccount.com
+FULL_SERVICE=${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com
+gcloud --project=${PROJECT} iam service-accounts add-iam-policy-binding \
+   ${GCE_DEFAULT} --member="serviceAccount:${FULL_SERVICE}" \
+   --role=roles/iam.serviceAccountUser
+```
+  * Service Account User of the Compute Engine Default Service account (to avoid this [error](https://stackoverflow.com/questions/40367866/gcloud-the-user-does-not-have-access-to-service-account-default))
+
 
 Create a secret key containing a GCP private key for the service account
 
 ```
 KEY_FILE=<path to key>
+SECRET_NAME=gcp-credentials
 gcloud iam service-accounts keys create ${KEY_FILE} \
     	--iam-account ${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com
-kubectl create secret generic kubeflow-testing-credentials \
-    --namespace=kubeflow-test-infra --from-file=key.json=${KEY_FILE}
+kubectl create secret generic ${SECRET_NAME} \
+    --namespace=${NAMESPACE} --from-file=key.json=${KEY_FILE}
 ```
 
 Make the service account a cluster admin
@@ -260,14 +323,15 @@ kubectl create clusterrolebinding  ${SERVICE_ACCOUNT}-admin --clusterrole=cluste
 ```
 * The service account is used to deploye Kubeflow which entails creating various roles; so it needs sufficient RBAC permission to do so.
 
-The service account also needs the following GCP privileges because various tests use them
+Add a clusterrolebinding that uses the numeric id of the service account as a work around for
+[ksonnet/ksonnet#396](https://github.com/ksonnet/ksonnet/issues/396)
 
-  * Project Viewer (because GCB requires this with gcloud)
-  * Cloud Container Builder
-  * Kubernetes Engine Admin (some tests create GKE clusters)
-  * Logs viewer
-  * Storage Admin
-  * Service Account User of the Compute Engine Default Service account (to avoid this [error](https://stackoverflow.com/questions/40367866/gcloud-the-user-does-not-have-access-to-service-account-default))
+
+```
+NUMERIC_ID=`gcloud --project=kubeflow-ci iam service-accounts describe ${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com --format="value(oauth2ClientId)"`
+kubectl create clusterrolebinding  ${SERVICE_ACCOUNT}-numeric-id-admin --clusterrole=cluster-admin  \
+    --user=${NUMERIC_ID}
+```
 
 ### Create a GitHub Token
 
@@ -282,7 +346,7 @@ You can use the GitHub API to create a token
 To create the secret run
 
 ```
-kubectl create secret generic github-token --namespace=kubeflow-test-infra --from-literal=github_token=${GITHUB_TOKEN}
+kubectl create secret generic github-token --namespace=${NAMESPACE} --from-literal=github_token=${GITHUB_TOKEN}
 ```
 
 ### Deploy NFS
@@ -307,14 +371,58 @@ point to your cluster.
 
 You can deploy argo as follows (you don't need to use argo's CLI)
 
+Set up the environment
+
 ```
-ks apply prow -c argo
+NFS_SERVER=<Internal GCE IP address of the NFS Server>
+ks env add ${ENV}
+ks param set --env=${ENV} argo namespace ${NAMESPACE}
+ks param set --env=${ENV} debug-worker namespace ${NAMESPACE}
+ks param set --env=${ENV} nfs-external namespace ${NAMESPACE}
+ks param set --env=${ENV} nfs-external nfsServer ${NFS_SERVER}
+```
+
+In the testing environment (but not release) we also expose the UI
+
+```
+ks param set --env=${ENV} argo exposeUi true
+```
+
+```
+ks apply ${ENV} -c argo
 ```
 
 Create the PVs corresponding to external NFS
 
 ```
-ks apply prow -c nfs-external
+ks apply ${ENV} -c nfs-external
+```
+
+### Release infrastructure
+
+Our release infrastructure is largely identical to our test infrastructure
+except its more locked down.
+
+In particular, we don't expose the Argo UI publicly.
+
+Additionally we need to grant the service account access to the GCR
+registry used to host our images.
+
+```
+GCR_PROJECT=kubeflow-images-public
+gcloud projects add-iam-policy-binding ${GCR_PROJECT} \
+      --member serviceAccount:${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com
+      --role=roles/storage.admin
+```
+
+We also need to give access to the GCB service account to the registry
+
+```
+GCR_PROJECT=kubeflow-images-public
+GCB_SERVICE_ACCOUNT=${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com
+gcloud projects add-iam-policy-binding ${GCR_PROJECT} \
+      --member serviceAccount:${GCB_SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com
+      --role=roles/storage.admin
 ```
 
 #### Troubleshooting
@@ -332,18 +440,17 @@ kubectl create clusterrolebinding default-admin --clusterrole=cluster-admin --us
 
     * Add prow jobs to [prow/config.yaml](https://github.com/kubernetes/test-infra/pull/4951/files#diff-406185368ba7839d1459d3d51424f104)
     * Add trigger plugin to [prow/plugins.yaml](https://github.com/kubernetes/test-infra/pull/4951/files#diff-ae83e55ccb05896d5229df577d34255d)
-    * Add test dashboards to [testgrid/config/config.yaml](https://github.com/kubernetes/test-infra/pull/4951/files#diff-49f154cd90facc43fda49a99885e6d17)
-    * Modify testgrid/cmd/config/config_test.go
+    * Add test dashboards to [testgrid/config.yaml](https://github.com/kubernetes/test-infra/pull/4951/files#diff-49f154cd90facc43fda49a99885e6d17)
+    * Modify testgrid/cmd/configurator/config_test.go
        to allow presubmits for the new repo.
-1. Add the k8s bot account, k8s-ci-robot, as an admin on the repository
-    * Admin privileges are needed to update status (but not comment)
-    * Someone with access to the bot will need to accept the request.
+1. Add the `ci-bots` team to the repository with write access
+    * Write access will allow bots in the team to update status
 1. Follow [instructions](https://github.com/kubernetes/test-infra/tree/master/gubernator#adding-a-repository-to-the-pr-dashboard) for adding a repository to the PR
    dashboard.
+1. Add an `OWNERS` to your Kubeflow repository.  The `OWNERS` file, like [this one](https://github.com/kubeflow/kubeflow/blob/master/OWNERS), will specify who can review and approve on this repo.
 
 
 Webhooks for prow should already be configured according to these [instructions](https://github.com/kubernetes/test-infra/blob/master/prow/getting_started.md#add-the-webhook-to-github) for the org so you shouldn't
 need to set hooks per repository.
     * Use https://prow.k8s.io/hook as the target
     * Get HMAC token from k8s test team
-

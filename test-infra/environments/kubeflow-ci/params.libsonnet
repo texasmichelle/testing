@@ -1,8 +1,13 @@
 local params = import "../../components/params.libsonnet";
-params + {
-  components +: {
-    "nfs-external" +: {
-      nfsServer: "10.128.0.3",
+params {
+  components+: {
+    // Insert component parameter overrides here. Ex:
+    // guestbook +: {
+    //   name: "guestbook-dev",
+    //   replicas: params.global.replicas,
+    // },
+    argo+: {
+      exposeUi: true,
     },
   },
 }

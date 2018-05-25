@@ -8,6 +8,7 @@
     // Each object below should correspond to a component in the components/ directory
     argo: {
       namespace: "kubeflow-test-infra",
+      exposeUi: false,
     },
     "nfs-external": {
       name: "nfs-external",
@@ -17,6 +18,7 @@
     "debug-worker": {
       name: "debug-worker",
       namespace: "kubeflow-test-infra",
+      gcpCredentialsSecretName: "kubeflow-testing-credentials",
     },
   },
 }
